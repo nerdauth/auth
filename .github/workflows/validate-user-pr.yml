@@ -1,0 +1,88 @@
+# .github/workflows/validate-user-pr.yml
+name: Validate User PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate users entry
+        env:
+          PR_USER: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -e
+
+          echo "PR opened by: $PR_USER"
+
+          # Fetch base branch
+          git fetch origin "${{ github.base_ref }}"
+
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l)
+
+          # Only one file can be changed
+          if [ "$FILE_COUNT" -ne 1 ]; then
+            echo "Only one file may be changed."
+            exit 1
+          fi
+
+          EXPECTED_FILE="users/${PR_USER}.na"
+
+          # File must match expected path
+          if [ "$CHANGED_FILES" != "$EXPECTED_FILE" ]; then
+            echo "You may only create $EXPECTED_FILE"
+            exit 1
+          fi
+
+          # File must be newly added
+          FILE_STATUS=$(git diff --name-status origin/${{ github.base_ref }}...HEAD)
+
+          echo "$FILE_STATUS"
+
+          if ! echo "$FILE_STATUS" | grep -q "^A[[:space:]]$EXPECTED_FILE$"; then
+            echo "File must be newly created."
+            exit 1
+          fi
+
+          # Validate JSON content
+          python3 <<EOF
+          import json
+          import os
+          import sys
+
+          pr_user = os.environ["PR_USER"]
+          path = f"users/{pr_user}.na"
+
+          with open(path, "r") as f:
+              data = json.load(f)
+
+          required_keys = {"username", "email"}
+
+          if set(data.keys()) != required_keys:
+              print("JSON must contain only username and email")
+              sys.exit(1)
+
+          if data["username"] != pr_user:
+              print("Username does not match PR creator")
+              sys.exit(1)
+
+          if not isinstance(data["email"], str) or "@" not in data["email"]:
+              print("Invalid email")
+              sys.exit(1)
+
+          print("Validation passed")
+          EOF
